@@ -1,10 +1,9 @@
-// cannister code goes here
-// cannister code goes here
-import { $query, $update, Record, StableBTreeMap, Vec, match, Result, nat64, ic, Opt } from 'azle';
+import { $query, $update, Record, StableBTreeMap, Vec, match, Result, nat64, ic, Opt, Principal } from 'azle';
 import { v4 as uuidv4 } from 'uuid';
 
 type Ticket = Record<{
     id: string;
+    seller: Principal;
     movie: string;
     placement: nat64;
     reserved: boolean;
@@ -17,66 +16,83 @@ type TicketPayload = Record<{
     placement: nat64;
 }>
 
-const messageStorage = new StableBTreeMap<string, Ticket>(0, 44, 1024);
+const ticketsStorage = new StableBTreeMap<string, Ticket>(0, 44, 1024);
 
 $query;
 export function getTickets(): Result<Vec<Ticket>, string> {
-    return Result.Ok(messageStorage.values());
+    if(ticketsStorage.isEmpty()){
+        return Result.Err(`No tickets in storage`);
+    }
+    return Result.Ok(ticketsStorage.values());
 }
 
 $query;
 export function getTicket(id: string): Result<Ticket, string> {
-    return match(messageStorage.get(id), {
-        Some: (message) => Result.Ok<Ticket, string>(message),
-        None: () => Result.Err<Ticket, string>(`ticket with id=${id} not found`)
+    return match(ticketsStorage.get(id), {
+        Some: (ticket) => Result.Ok<Ticket, string>(ticket),
+        None: () => Result.Err<Ticket, string>(`Ticket with id=${id} not found`)
     });
 }
 
 $update;
 export function addTicket(payload: TicketPayload): Result<Ticket, string> {
-    const ticket: Ticket = { id: uuidv4(), createdAt: ic.time(), updatedAt: Opt.None, reserved: false, ...payload };
-    messageStorage.insert(ticket.id, ticket);
+    const ticket: Ticket = { id: uuidv4(), seller: ic.caller() ,createdAt: ic.time(), updatedAt: Opt.None, reserved: false, ...payload };
+    ticketsStorage.insert(ticket.id, ticket);
     return Result.Ok(ticket);
 }
 
 $update;
 export function buyTicket(id: string): Result<Ticket, string> {
-    return match(messageStorage.get(id), {
-        Some: (message) => {
-            const ticketToBuy: Ticket = { ...message };
-            if (ticketToBuy.reserved)
-                return Result.Err<Ticket, string>(`Ticket for placement ${ticketToBuy.placement} already reserved`)
+    return match(ticketsStorage.get(id), {
+        Some: (ticket) => {
+            // returns an error message if ticket is already sold/reserved
+            if (ticket.reserved)
+                return Result.Err<Ticket, string>(`Ticket for placement ${ticket.placement} already reserved`)
             else {
-                const reservedTicket: Ticket = { ...message, reserved: true, updatedAt: Opt.Some(ic.time()) };
-                messageStorage.insert(message.id, reservedTicket);
+                // sets reserved property to true, updates the updatedAt property and saves the changes to storage
+                const reservedTicket: Ticket = { ...ticket, reserved: true, updatedAt: Opt.Some(ic.time()) };
+                ticketsStorage.insert(ticket.id, reservedTicket);
                 return Result.Ok<Ticket, string>(reservedTicket);
             }
         },
-        None: () => Result.Err<Ticket, string>(`ticket with id=${id} does not exist.`)
+        None: () => Result.Err<Ticket, string>(`Ticket with id=${id} does not exist.`)
     });
 }
 
 $update;
 export function revokeTicket(id: string): Result<Ticket, string> {
-    return match(messageStorage.get(id), {
-        Some: (message) => {
-            const ticketToRevoke: Ticket = { ...message }
-            if (!ticketToRevoke.reserved)
-                return Result.Err<Ticket, string>(`Ticket with placement ${ticketToRevoke.placement} is free.`)
+    return match(ticketsStorage.get(id), {
+        Some: (ticket) => {
+            // checks if the caller isn't the ticket's seller, returns an error message if true
+            if(ticket.seller.toString() !== ic.caller().toString()){
+                return Result.Err<Ticket,string>(`Only the seller of a ticket can revoke it.`)
+            }
+            // returns an error message if ticket isn't reserved
+            if (!ticket.reserved)
+                return Result.Err<Ticket, string>(`Ticket with placement ${ticket.placement} is free.`)
             else {
-                const revokedTicket: Ticket = { ...message, reserved: false };
+                // sets reserved property to true, updates the updatedAt property and saves the changes to storage
+                const revokedTicket: Ticket = { ...ticket, reserved: false, updatedAt: Opt.Some(ic.time()) };
+                ticketsStorage.insert(revokedTicket.id, revokedTicket)
                 return Result.Ok<Ticket, string>(revokedTicket)
             }
         },
-        None: () => Result.Err<Ticket, string>(`ticket with id=${id} does not exist.`)
+        None: () => Result.Err<Ticket, string>(`Ticket with id=${id} does not exist.`)
     });
 }
 
 $update;
 export function deleteTicket(id: string): Result<Ticket, string> {
-    return match(messageStorage.remove(id), {
-        Some: (deletedMessage) => Result.Ok<Ticket, string>(deletedMessage),
-        None: () => Result.Err<Ticket, string>(`ticket with id=${id} does not exist.`)
+    return match(ticketsStorage.get(id), {
+        Some: (ticket) => {
+            // checks if the caller isn't the ticket's seller, returns an error message if true
+            if(ticket.seller.toString() !== ic.caller().toString()){
+                return Result.Err<Ticket,string>(`Only the seller of a ticket can revoke it.`)
+            }
+            ticketsStorage.remove(ticket.id)
+            return Result.Ok<Ticket, string>(ticket)
+        },
+        None: () => Result.Err<Ticket, string>(`Ticket with id=${id} does not exist.`)
     });
 }
 
